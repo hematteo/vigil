@@ -65,8 +65,10 @@ _DEFAULT_RUNPOD_LOG_COMMAND = (
 )
 
 
-def _graphql_url(api_key: str) -> str:
-    return f"{RUNPOD_API_BASE}?api_key={api_key}"
+def _auth_headers(api_key: str) -> dict[str, str]:
+    # Header rather than the ?api_key= query param, so the key never appears in
+    # URLs (which httpx includes in error messages that end up in logs).
+    return {"Authorization": f"Bearer {api_key}"}
 
 
 def _check_graphql_errors(body: dict) -> None:
@@ -82,7 +84,8 @@ class RunPodProvider:
 
     async def fetch_instances(self, api_key: str, client: httpx.AsyncClient) -> DiscoveryResult:
         resp = await client.post(
-            _graphql_url(api_key),
+            RUNPOD_API_BASE,
+            headers=_auth_headers(api_key),
             json={"query": _PODS_QUERY},
             timeout=httpx.Timeout(10.0, connect=5.0),
         )
@@ -120,6 +123,7 @@ class RunPodProvider:
                 uptime = (pod.get("runtime") or {}).get("uptimeInSeconds")
                 if isinstance(uptime, (int, float)) and uptime > 0:
                     start_time = time.time() - uptime
+
                 machine = pod.get("machine") or {}
 
                 try:
@@ -152,7 +156,8 @@ class RunPodProvider:
     async def fetch_credit(self, api_key: str, client: httpx.AsyncClient) -> float | None:
         try:
             resp = await client.post(
-                _graphql_url(api_key),
+                RUNPOD_API_BASE,
+                headers=_auth_headers(api_key),
                 json={"query": _CREDIT_QUERY},
                 timeout=httpx.Timeout(10.0, connect=5.0),
             )
@@ -167,7 +172,8 @@ class RunPodProvider:
 
     async def destroy_instance(self, api_key: str, instance_id: int | str, client: httpx.AsyncClient) -> None:
         resp = await client.post(
-            _graphql_url(api_key),
+            RUNPOD_API_BASE,
+            headers=_auth_headers(api_key),
             json={"query": _TERMINATE_MUTATION, "variables": {"id": str(instance_id)}},
             timeout=httpx.Timeout(10.0, connect=5.0),
         )

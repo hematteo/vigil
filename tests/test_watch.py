@@ -348,3 +348,66 @@ class TestNtfy:
         assert kwargs["content"].decode() == "No new output for 30m — hung"
         assert kwargs["headers"]["Title"] == "vigil #42: hang (llamaft)"
         assert kwargs["headers"]["Priority"] == "high"
+
+
+class TestDiscoveryErrors:
+    @pytest.mark.anyio
+    async def test_discovery_error_log_redacts_api_key(self, tmp_path):
+        logged = []
+        config = Config(log_dir=tmp_path, api_key="rp-secret-key", poll_interval=3600)
+        provider = MagicMock()
+        provider.fetch_instances = AsyncMock(
+            side_effect=RuntimeError("401 for url 'https://x/graphql?api_key=rp-secret-key'")
+        )
+        w = Watcher(config, provider, log=logged.append)
+        task = asyncio.create_task(w.run())
+        await asyncio.sleep(0.05)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        assert any("Discovery error" in line for line in logged)
+        assert not any("rp-secret-key" in line for line in logged)
+
+
+class TestWatchOptOut:
+    def test_should_watch_rules(self):
+        from vigil.config import InstanceConfig
+
+        config = Config(watch_skip_labels=["jupyter", "Dev"])
+        assert config.should_watch(1, "llama-ft")
+        assert config.should_watch(1, None)
+        assert not config.should_watch(1, "my-jupyter-box")
+        assert not config.should_watch(1, "DEV-server")
+        config.instances["2"] = InstanceConfig(watch=False)
+        assert not config.should_watch(2, "llama-ft")
+        config.instances["3"] = InstanceConfig(watch=True)
+        assert config.should_watch(3, "jupyter")  # explicit per-instance setting wins
+
+    @pytest.mark.anyio
+    async def test_skipped_instances_are_not_watched(self, tmp_path):
+        sent = []
+
+        async def notify(inst, alert_type, text):
+            sent.append((inst.id, alert_type))
+
+        w = _watcher(tmp_path, _Clock(T0), notify)
+        w.config.watch_skip_labels = ["jupyter"]
+        await w.reconcile([_instance(id=1, label="train"), _instance(id=2, label="jupyter")])
+        assert set(w.watched) == {1}
+
+        # Relabelled into the skip list: stop watching without a false "gone" alert
+        tasks = list(w.watched[1].tasks)
+        await w.reconcile([_instance(id=1, label="jupyter-now"), _instance(id=2, label="jupyter")])
+        assert w.watched == {}
+        assert sent == []
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    def test_opt_out_round_trips_through_yaml(self, tmp_path):
+        from vigil.config import InstanceConfig, load_config
+
+        config = Config(watch_skip_labels=["jupyter"])
+        config.instances["7"] = InstanceConfig(watch=False)
+        path = tmp_path / "config.yaml"
+        config.save_config(path)
+        loaded = load_config(path)
+        assert loaded.watch_skip_labels == ["jupyter"]
+        assert loaded.instances["7"].watch is False

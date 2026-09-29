@@ -331,3 +331,29 @@ async def test_runpod_start_time_from_uptime():
     assert inst.id == "abc123xyz"
     assert inst.ssh_port == 40022
     assert inst.start_time == 6_400.0
+
+
+@pytest.mark.anyio
+async def test_runpod_sends_key_in_header_not_url():
+    from vigil.providers.runpod import RunPodProvider
+
+    client = AsyncMock(spec=httpx.AsyncClient)
+    client.post = AsyncMock(return_value=_mock_response({"data": {"myself": {"pods": [], "clientBalance": 1.0}}}))
+    provider = RunPodProvider()
+
+    await provider.fetch_instances("rp-secret-key", client)
+    await provider.fetch_credit("rp-secret-key", client)
+    await provider.destroy_instance("rp-secret-key", "pod1", client)
+
+    for call in client.post.call_args_list:
+        assert "rp-secret-key" not in call.args[0]
+        assert call.kwargs["headers"] == {"Authorization": "Bearer rp-secret-key"}
+
+
+def test_redact():
+    from vigil.discovery import redact
+
+    msg = "Client error '401' for url 'https://api.runpod.io/graphql?api_key=rp-secret-key'"
+    assert "rp-secret-key" not in redact(msg, "rp-secret-key")
+    assert redact(msg, "") == msg
+    assert redact("abc", "a") == "abc"  # too short to redact safely

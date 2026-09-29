@@ -20,7 +20,7 @@ import httpx
 from .alerts import post_webhook_alert
 from .collector import stream_instance_logs
 from .config import Config
-from .discovery import InstanceInfo, RateLimitError
+from .discovery import InstanceInfo, RateLimitError, redact
 from .parser import MetricParser
 from .providers import Provider
 from .ssh import ssh_connect
@@ -284,6 +284,7 @@ class Watcher:
         self.storage = LogStorage(config.log_dir)
         self.parser = MetricParser(config.metric_patterns)
         self.watched: dict[int | str, _Watched] = {}
+        self._skipped: set[int | str] = set()
 
     def log(self, msg: str) -> None:
         self._log(f"{datetime.now():%Y-%m-%d %H:%M:%S}  {msg}")
@@ -302,7 +303,7 @@ class Watcher:
                         await asyncio.sleep(exc.retry_after)
                         continue
                     except Exception as exc:
-                        self.log(f"Discovery error: {type(exc).__name__}: {exc}")
+                        self.log(redact(f"Discovery error: {type(exc).__name__}: {exc}", self.config.api_key))
                     await asyncio.sleep(self.config.poll_interval)
             finally:
                 evaluator.cancel()
@@ -316,7 +317,15 @@ class Watcher:
                 self.storage.close()
 
     async def reconcile(self, running: list[InstanceInfo]) -> None:
-        live = {inst.id: inst for inst in running}
+        live: dict[int | str, InstanceInfo] = {}
+        for inst in running:
+            if self.config.should_watch(inst.id, inst.label):
+                live[inst.id] = inst
+                self._skipped.discard(inst.id)
+            elif inst.id not in self._skipped:
+                self._skipped.add(inst.id)
+                label = f" [{inst.label}]" if inst.label else ""
+                self.log(f"Skipping #{inst.id}{label} (excluded by watch settings)")
 
         for iid in list(self.watched):
             if iid not in live:
@@ -324,7 +333,8 @@ class Watcher:
                 for task in w.tasks:
                     task.cancel()
                 self.storage.close(iid)
-                await self._alert(w, GONE, reminder=False)
+                if iid not in self._skipped:  # still running, just excluded now (e.g. relabelled)
+                    await self._alert(w, GONE, reminder=False)
 
         now = self.clock()
         for iid, inst in live.items():

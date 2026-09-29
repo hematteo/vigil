@@ -3,6 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
+def redact(text: str, secret: str | None) -> str:
+    """Remove *secret* (e.g. an API key) from text that is about to be shown or logged."""
+    if secret and len(secret) >= 4:
+        return text.replace(secret, "***")
+    return text
+
+
 class RateLimitError(Exception):
     def __init__(self, retry_after: float = 60.0):
         self.retry_after = retry_after

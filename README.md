@@ -162,11 +162,20 @@ It streams logs from every running instance over SSH, samples `nvidia-smi` every
 | Resumes after an alert | | **recovered** |
 | Instance disappears from the provider | | **gone**: stopped, destroyed or preempted |
 
-The GPU must stay idle across the whole stall window before a hang is reported, so short dips between epochs don't page you. Each alert says what the silence has cost so far:
+The GPU must stay idle across the whole stall window before a hang is reported, so short dips between epochs don't page you. Progress-bar redraws (tqdm and friends) count as output, so a run that only updates its bar between log lines isn't mistaken for a silent one. Each alert says what the silence has cost so far:
 
 > No new output for 47m and GPU idle (0% util) while still holding memory. Training looks hung. Cost: ~$1.88 during this silence, ~$14.40 total (6.0h @ $2.400/hr).
 
 Unresolved alerts repeat every `watch_reminder_minutes` with the updated cost. Logs are persisted to `log_dir` just like the TUI, so they survive the instance being destroyed.
+
+To leave some instances alone (a Jupyter box, an inference server), skip them by label or ID:
+
+```yaml
+watch_skip_labels: [jupyter, dev]   # instances whose label contains any of these
+instances:
+  "12345678":
+    watch: false
+```
 
 Alerts go to any `alert_webhook_url`: [ntfy](https://ntfy.sh) (phone push, no account needed), Slack, Discord, or raw JSON. Check the setup with `vigil watch --test-alert`. To keep it running, use `tmux`, `nohup vigil watch >> ~/vigil-watch.log 2>&1 &`, or a systemd user service.
 
@@ -304,6 +313,7 @@ watch_gpu_poll_seconds: 60       # how often to sample nvidia-smi
 watch_gpu_idle_percent: 5        # max GPU util that still counts as idle
 watch_busy_silence_minutes: 30   # silence before alerting even though the GPU is busy
 watch_reminder_minutes: 60       # repeat unresolved alerts (0 = once)
+watch_skip_labels: []            # skip instances whose label contains any of these
 ```
 
 ### Per-Instance Overrides

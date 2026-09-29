@@ -7,7 +7,7 @@ from textual.app import ComposeResult
 from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Static
 
-from ..discovery import InstanceInfo
+from ..discovery import InstanceInfo, redact
 from .confirm_destroy import ConfirmDestroyScreen
 
 if TYPE_CHECKING:
@@ -105,7 +105,7 @@ class InstanceManagerScreen(Screen):
                 self.app.notify(f"Instance #{instance_id} stop requested")
         except Exception as exc:
             if self.is_attached:
-                self.app.notify(f"Failed to stop #{instance_id}: {exc}", severity="error")
+                self.app.notify(f"Failed to stop #{instance_id}: {redact(str(exc), self._api_key)}", severity="error")
 
     def _build_tables(self) -> None:
         self._build_running_table()

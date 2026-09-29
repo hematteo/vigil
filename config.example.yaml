@@ -86,6 +86,10 @@ watch_busy_silence_minutes: 30
 # Repeat unresolved alerts with updated cost every N minutes (0 = alert once)
 watch_reminder_minutes: 60
 
+# Skip instances whose label contains any of these (case-insensitive).
+# To skip a single instance instead, set `watch: false` under instances.<id>.
+watch_skip_labels: []
+
 # ── Display ───────────────────────────────────────────────────────────
 
 # Number of metric readings to keep for sparkline rendering
@@ -185,3 +189,4 @@ reconnect_backoff_max: 60
 #     ssh_username: "trainer"
 #   67890:
 #     log_command: "docker logs -f training_container"
+#     watch: false      # `vigil watch` ignores this instance
