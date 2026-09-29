@@ -12,7 +12,7 @@ from textual.worker import Worker
 from .alerts import post_webhook_alert
 from .collector import stream_instance_logs
 from .config import Config, InstanceConfig
-from .discovery import InstanceInfo, RateLimitError
+from .discovery import InstanceInfo, RateLimitError, redact
 from .providers import Provider
 from .state import AppState
 from .parser import MetricParser
@@ -221,9 +221,10 @@ class Dashboard(App):
                 await asyncio.sleep(exc.retry_after)
                 continue
             except Exception as exc:
+                msg = redact(str(exc), self.app_config.api_key)
                 if first_run:
-                    self._show_empty(f"Discovery error: {exc}")
-                self.notify(f"Discovery: {exc}", severity="error", timeout=5)
+                    self._show_empty(f"Discovery error: {msg}")
+                self.notify(f"Discovery: {msg}", severity="error", timeout=5)
 
             first_run = False
             await asyncio.sleep(self.app_config.poll_interval)
@@ -690,7 +691,8 @@ class Dashboard(App):
             )
             self.notify(f"Instance #{instance_id} stop requested")
         except Exception as exc:
-            self.notify(f"Failed to stop #{instance_id}: {exc}", severity="error")
+            msg = redact(str(exc), self.app_config.api_key)
+            self.notify(f"Failed to stop #{instance_id}: {msg}", severity="error")
 
     def action_global_search(self) -> None:
         self.push_screen(GlobalSearchScreen(self._panels))

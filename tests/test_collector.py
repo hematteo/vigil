@@ -6,7 +6,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import asyncssh
 import pytest
 
-from vigil.collector import _read_stderr, _stream_one_session, _write_to_storage, stream_instance_logs
+from vigil.collector import (
+    LineSplitter,
+    _read_stderr,
+    _stream_one_session,
+    _write_to_storage,
+    stream_instance_logs,
+)
 from vigil.config import Config
 from vigil.discovery import InstanceInfo
 from vigil.parser import MetricParser
@@ -168,10 +174,10 @@ class TestReadStderr:
 
 def _make_mock_conn(lines: list[str], returncode: int = 0, stderr_data: str = ""):
     """Build a mock SSH connection that yields *lines* from stdout."""
-    # stdout mock: readline returns each line, then "" to signal EOF
-    readline_returns = [line + "\n" for line in lines] + [""]
+    # stdout mock: read returns each line as a chunk, then "" to signal EOF
+    chunks = [line + "\n" for line in lines] + [""]
     mock_stdout = MagicMock()
-    mock_stdout.readline = AsyncMock(side_effect=readline_returns)
+    mock_stdout.read = AsyncMock(side_effect=chunks)
 
     # stderr mock
     mock_stderr = MagicMock()
@@ -264,10 +270,10 @@ class TestStreamOneSession:
 
     @pytest.mark.anyio()
     @patch("vigil.collector.ssh_connect", new_callable=AsyncMock)
-    async def test_readline_timeout_stall(self, mock_ssh_connect, instance, config, storage, parser):
+    async def test_read_timeout_stall(self, mock_ssh_connect, instance, config, storage, parser):
         mock_stdout = MagicMock()
-        # First readline succeeds, second times out
-        mock_stdout.readline = AsyncMock(side_effect=["line1\n", asyncio.TimeoutError()])
+        # First read succeeds, second times out
+        mock_stdout.read = AsyncMock(side_effect=["line1\n", asyncio.TimeoutError()])
 
         mock_stderr = MagicMock()
         mock_stderr.read = AsyncMock(return_value="")
@@ -517,3 +523,61 @@ class TestStreamInstanceLogs:
         status_calls = [c.args[0] for c in on_status.call_args_list]
         stall_msgs = [s for s in status_calls if "STALLED" in s]
         assert len(stall_msgs) >= 1
+
+
+# ===========================================================================
+# LineSplitter / progress bars
+# ===========================================================================
+
+
+class TestLineSplitter:
+    def test_splits_all_line_endings(self):
+        sp = LineSplitter()
+        assert sp.feed("a\nb\r\nc\rd") == [("a", False), ("b", False), ("c", True)]
+        assert sp.flush() == [("d", False)]
+
+    def test_crlf_split_across_chunks_is_one_newline(self):
+        sp = LineSplitter()
+        assert sp.feed("step 1\r") == []
+        assert sp.feed("\nstep 2\n") == [("step 1", False), ("step 2", False)]
+
+    def test_tqdm_redraws_are_progress(self):
+        sp = LineSplitter()
+        out = sp.feed("\r 10%|#  | 10/100\r 20%|## | 20/100")
+        assert out == [("", True), (" 10%|#  | 10/100", True)]
+        assert sp.flush() == [(" 20%|## | 20/100", False)]
+
+    def test_trailing_cr_flushes_as_progress(self):
+        sp = LineSplitter()
+        assert sp.feed("50%\r") == []
+        assert sp.flush() == [("50%", True)]
+
+    def test_oversized_line_is_emitted(self):
+        sp = LineSplitter()
+        out = sp.feed("x" * 70000)
+        assert out == [("x" * 70000, False)]
+
+
+class TestProgressBars:
+    @pytest.mark.anyio()
+    @patch("vigil.collector.ssh_connect", new_callable=AsyncMock)
+    async def test_progress_counts_as_activity_but_is_throttled(
+        self, mock_ssh_connect, instance, config, storage, parser
+    ):
+        bar = "".join(f"\r{i}%|loss=0.{i}" for i in range(1, 50))
+        mock_conn = _make_mock_conn([])
+        mock_conn.create_process.return_value.stdout.read = AsyncMock(
+            side_effect=["epoch 1\n", bar, "\ndone\n", ""]
+        )
+        mock_ssh_connect.return_value = mock_conn
+
+        on_line = MagicMock()
+        update_line_time = MagicMock()
+        await _stream_one_session(instance, config, storage, parser, on_line, MagicMock(), update_line_time)
+
+        emitted = [c.args[0] for c in on_line.call_args_list]
+        # first redraw is logged, the rest within 10s are skipped; the final
+        # state of the bar arrives with its newline
+        assert emitted == ["epoch 1", "1%|loss=0.1", "49%|loss=0.49", "done"]
+        # every redraw still resets the stall timer
+        assert update_line_time.call_count == 1 + 49 + 1 + 1

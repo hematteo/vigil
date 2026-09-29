@@ -57,6 +57,7 @@ class InstanceConfig:
     log_command: str | None = None
     stall_threshold_minutes: int | None = None
     ssh_username: str | None = None
+    watch: bool | None = None  # False = `vigil watch` ignores this instance
 
 
 @dataclass
@@ -94,6 +95,12 @@ class Config:
     reconnect_backoff_max: int = 60
     log_retention_days: int = 0       # 0 = keep forever
     log_max_size_mb: int = 0          # 0 = unlimited
+    # `vigil watch` (headless hang watchdog)
+    watch_gpu_poll_seconds: int = 60
+    watch_gpu_idle_percent: float = 5.0
+    watch_busy_silence_minutes: int = 30
+    watch_reminder_minutes: int = 60  # 0 = alert once per episode
+    watch_skip_labels: list[str] = field(default_factory=list)  # label substrings `vigil watch` ignores
     _config_path: Path | None = field(default=None, repr=False, compare=False)
 
     def log_command_for(self, instance_id: int | str) -> str:
@@ -113,6 +120,14 @@ class Config:
         if inst and inst.ssh_username:
             return inst.ssh_username
         return self.ssh_username
+
+    def should_watch(self, instance_id: int | str, label: str | None) -> bool:
+        """Whether `vigil watch` should monitor this instance."""
+        inst = self.instances.get(str(instance_id))
+        if inst and inst.watch is not None:
+            return inst.watch
+        lowered = (label or "").lower()
+        return not any(skip.lower() in lowered for skip in self.watch_skip_labels if skip)
 
     def save_config(self, path: Path | None = None) -> None:
         """Write current config to YAML, preserving only non-default fields."""
@@ -180,6 +195,14 @@ class Config:
             data["log_retention_days"] = self.log_retention_days
         if self.log_max_size_mb != defaults.log_max_size_mb:
             data["log_max_size_mb"] = self.log_max_size_mb
+        for key in (
+            "watch_gpu_poll_seconds", "watch_gpu_idle_percent",
+            "watch_busy_silence_minutes", "watch_reminder_minutes",
+        ):
+            if getattr(self, key) != getattr(defaults, key):
+                data[key] = getattr(self, key)
+        if self.watch_skip_labels:
+            data["watch_skip_labels"] = self.watch_skip_labels
 
         nc_defaults = NotificationConfig()
         nc_data = {}
@@ -199,6 +222,8 @@ class Config:
                     inst_data["stall_threshold_minutes"] = icfg.stall_threshold_minutes
                 if icfg.ssh_username:
                     inst_data["ssh_username"] = icfg.ssh_username
+                if icfg.watch is not None:
+                    inst_data["watch"] = icfg.watch
                 if inst_data:
                     instances_data[str(iid)] = inst_data
             if instances_data:
@@ -227,6 +252,7 @@ def _parse_instance(idata: dict) -> InstanceConfig:
         log_command=idata.get("log_command"),
         stall_threshold_minutes=int(stall) if stall is not None else None,
         ssh_username=idata.get("ssh_username"),
+        watch=bool(idata["watch"]) if idata.get("watch") is not None else None,
     )
 
 
@@ -252,8 +278,9 @@ def _apply_yaml_fields(config: Config, data: dict) -> None:
         "max_grid_columns", "log_buffer_lines", "log_display_lines",
         "ssh_login_timeout", "ssh_keepalive_interval", "reconnect_backoff_max",
         "log_retention_days", "log_max_size_mb",
+        "watch_gpu_poll_seconds", "watch_busy_silence_minutes", "watch_reminder_minutes",
     ), int)
-    _set_if_present(config, data, ("plateau_threshold",), float)
+    _set_if_present(config, data, ("plateau_threshold", "watch_gpu_idle_percent"), float)
 
     # Path fields need expanduser()
     for key in ("log_dir", "ssh_key_path"):
@@ -280,6 +307,9 @@ def _apply_yaml_fields(config: Config, data: dict) -> None:
     for key in ("decrease_good", "increase_good", "counters"):
         if key in data and isinstance(data[key], list):
             setattr(config, key, {str(v) for v in data[key]})
+
+    if "watch_skip_labels" in data and isinstance(data["watch_skip_labels"], list):
+        config.watch_skip_labels = [str(v) for v in data["watch_skip_labels"]]
 
     if "plateau_metrics" in data and isinstance(data["plateau_metrics"], list):
         config.plateau_metrics = [str(v) for v in data["plateau_metrics"]]

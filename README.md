@@ -138,9 +138,57 @@ vigil [OPTIONS]
 
   --config, -c PATH    Config file path (default: ~/.config/vigil/config.yaml)
   --api-key KEY        Provider API key (overrides config/env)
-  --provider NAME      GPU provider (default: vast) [vast, runpod]
+  --provider NAME      GPU provider (default: from config, else vast) [vast, runpod]
   --demo               Run with simulated instances (no API key or SSH needed)
   --reset-hints        Reset onboarding hints so they appear again
+```
+
+## Hang Watchdog: `vigil watch`
+
+Get pinged when a rented GPU training run hangs, with no changes to your training code. `vigil watch` runs headless, so leave it on any always-on machine (a small VPS, a home server, a Raspberry Pi) instead of your laptop.
+
+```bash
+vigil watch --webhook https://ntfy.sh/<your-secret-topic> --webhook-format ntfy
+```
+
+It streams logs from every running instance over SSH, samples `nvidia-smi` every minute, and combines the two:
+
+| Output | GPU | Alert |
+|---|---|---|
+| Stopped for `stall_threshold_minutes` | Idle, memory still allocated | **hang**: training looks stuck |
+| Stopped | Idle, memory released | **exited**: process finished or crashed, instance still billing |
+| Stopped for `watch_busy_silence_minutes` | Busy | **busy_silent**: long eval, or an NCCL deadlock (these spin at 100%) |
+| Stopped | `nvidia-smi` over SSH failing | **unreachable** |
+| Resumes after an alert | | **recovered** |
+| Instance disappears from the provider | | **gone**: stopped, destroyed or preempted |
+
+The GPU must stay idle across the whole stall window before a hang is reported, so short dips between epochs don't page you. Progress-bar redraws (tqdm and friends) count as output, so a run that only updates its bar between log lines isn't mistaken for a silent one. Each alert says what the silence has cost so far:
+
+> No new output for 47m and GPU idle (0% util) while still holding memory. Training looks hung. Cost: ~$1.88 during this silence, ~$14.40 total (6.0h @ $2.400/hr).
+
+Unresolved alerts repeat every `watch_reminder_minutes` with the updated cost. Logs are persisted to `log_dir` just like the TUI, so they survive the instance being destroyed.
+
+To leave some instances alone (a Jupyter box, an inference server), skip them by label or ID:
+
+```yaml
+watch_skip_labels: [jupyter, dev]   # instances whose label contains any of these
+instances:
+  "12345678":
+    watch: false
+```
+
+Alerts go to any `alert_webhook_url`: [ntfy](https://ntfy.sh) (phone push, no account needed), Slack, Discord, or raw JSON. Check the setup with `vigil watch --test-alert`. To keep it running, use `tmux`, `nohup vigil watch >> ~/vigil-watch.log 2>&1 &`, or a systemd user service.
+
+```text
+vigil watch [OPTIONS]
+
+  --config, -c PATH       Config file path
+  --api-key KEY           Provider API key
+  --provider NAME         vast or runpod (default: from config, else vast)
+  --webhook URL           Alert webhook URL (overrides config)
+  --webhook-format FMT    raw, slack, discord or ntfy
+  --stall-minutes N       Minutes without output before a run is checked for a hang
+  --test-alert            Send one test alert and exit
 ```
 
 ## Configuration
@@ -244,11 +292,11 @@ plateau_metrics: [loss]    # which metrics to watch
 
 ### Webhook Alerts
 
-Supports raw JSON, Slack Block Kit, and Discord embed formats:
+Supports raw JSON, Slack Block Kit, Discord embed, and ntfy formats:
 
 ```yaml
 alert_webhook_url: "https://hooks.slack.com/services/..."
-alert_webhook_format: "slack"  # "raw", "slack", or "discord"
+alert_webhook_format: "slack"  # "raw", "slack", "discord", or "ntfy"
 
 notifications:
   nan: true        # NaN/Inf detected in metrics
@@ -256,6 +304,16 @@ notifications:
   stall: true      # No output for configured minutes
   desktop: true    # Master switch for OS desktop notifications
   webhook: true    # Master switch for webhook alerts
+```
+
+### Watchdog (`vigil watch`)
+
+```yaml
+watch_gpu_poll_seconds: 60       # how often to sample nvidia-smi
+watch_gpu_idle_percent: 5        # max GPU util that still counts as idle
+watch_busy_silence_minutes: 30   # silence before alerting even though the GPU is busy
+watch_reminder_minutes: 60       # repeat unresolved alerts (0 = once)
+watch_skip_labels: []            # skip instances whose label contains any of these
 ```
 
 ### Per-Instance Overrides

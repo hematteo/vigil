@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
@@ -290,3 +290,70 @@ async def test_destroy_instance_raises_on_http_error():
 
     with pytest.raises(httpx.HTTPStatusError):
         await destroy_instance(API_KEY, 456, client)
+
+
+@pytest.mark.anyio
+async def test_fetch_instances_parses_start_date():
+    payload = {"instances": [_running_instance(start_date=1700000000.5), _running_instance(id=2, start_date=None)]}
+    client = AsyncMock(spec=httpx.AsyncClient)
+    client.get = AsyncMock(return_value=_mock_response(payload))
+
+    result = await _provider.fetch_instances(API_KEY, client)
+
+    assert result.running[0].start_time == 1700000000.5
+    assert result.running[1].start_time is None
+
+
+@pytest.mark.anyio
+async def test_runpod_start_time_from_uptime():
+    from vigil.providers.runpod import RunPodProvider
+
+    pod = {
+        "id": "abc123xyz",
+        "name": "sweep-7",
+        "desiredStatus": "RUNNING",
+        "costPerHr": 0.69,
+        "gpuCount": 1,
+        "machineId": "m1",
+        "runtime": {
+            "uptimeInSeconds": 3600,
+            "ports": [{"ip": "5.6.7.8", "isIpPublic": True, "privatePort": 22, "publicPort": 40022, "type": "tcp"}],
+        },
+        "machine": {"gpuDisplayName": "RTX 4090"},
+    }
+    client = AsyncMock(spec=httpx.AsyncClient)
+    client.post = AsyncMock(return_value=_mock_response({"data": {"myself": {"pods": [pod]}}}))
+
+    with patch("vigil.providers.runpod.time.time", return_value=10_000.0):
+        result = await RunPodProvider().fetch_instances(API_KEY, client)
+
+    inst = result.running[0]
+    assert inst.id == "abc123xyz"
+    assert inst.ssh_port == 40022
+    assert inst.start_time == 6_400.0
+
+
+@pytest.mark.anyio
+async def test_runpod_sends_key_in_header_not_url():
+    from vigil.providers.runpod import RunPodProvider
+
+    client = AsyncMock(spec=httpx.AsyncClient)
+    client.post = AsyncMock(return_value=_mock_response({"data": {"myself": {"pods": [], "clientBalance": 1.0}}}))
+    provider = RunPodProvider()
+
+    await provider.fetch_instances("rp-secret-key", client)
+    await provider.fetch_credit("rp-secret-key", client)
+    await provider.destroy_instance("rp-secret-key", "pod1", client)
+
+    for call in client.post.call_args_list:
+        assert "rp-secret-key" not in call.args[0]
+        assert call.kwargs["headers"] == {"Authorization": "Bearer rp-secret-key"}
+
+
+def test_redact():
+    from vigil.discovery import redact
+
+    msg = "Client error '401' for url 'https://api.runpod.io/graphql?api_key=rp-secret-key'"
+    assert "rp-secret-key" not in redact(msg, "rp-secret-key")
+    assert redact(msg, "") == msg
+    assert redact("abc", "a") == "abc"  # too short to redact safely

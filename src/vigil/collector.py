@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from typing import Callable
 
@@ -38,6 +39,49 @@ def _write_to_storage(
     return metrics
 
 
+_NEWLINE = re.compile(r"\r\n|\n|\r")
+
+# Emit a line anyway once the buffer gets this big without a line ending.
+_MAX_LINE_CHARS = 65536
+
+# Progress-bar redraws (bare \r, as tqdm does) all count as activity, but only
+# one per this many seconds is logged and parsed, so bars don't flood the logs.
+PROGRESS_EMIT_SECONDS = 10.0
+
+
+class LineSplitter:
+    """Split streamed text on \n, \r\n, and bare \r (progress-bar redraws).
+
+    ``feed`` returns ``(text, is_progress)`` pairs, where ``is_progress`` marks
+    a segment ended by a bare \r. A trailing \r is held back until the next
+    chunk shows whether it starts a \r\n.
+    """
+
+    def __init__(self) -> None:
+        self._buf = ""
+
+    def feed(self, data: str) -> list[tuple[str, bool]]:
+        self._buf += data
+        out: list[tuple[str, bool]] = []
+        pos = 0
+        for m in _NEWLINE.finditer(self._buf):
+            if m.group() == "\r" and m.end() == len(self._buf):
+                break
+            out.append((self._buf[pos:m.start()], m.group() == "\r"))
+            pos = m.end()
+        self._buf = self._buf[pos:]
+        if len(self._buf) > _MAX_LINE_CHARS:
+            out.append((self._buf, False))
+            self._buf = ""
+        return out
+
+    def flush(self) -> list[tuple[str, bool]]:
+        rest, self._buf = self._buf, ""
+        if rest.endswith("\r"):
+            return [(rest[:-1], True)]
+        return [(rest, False)] if rest else []
+
+
 async def _read_stderr(process: asyncssh.SSHClientProcess) -> str:
     """Best-effort read of stderr after process exit."""
     if not process.stderr:
@@ -72,21 +116,18 @@ async def _stream_one_session(
         on_status("connected")
         line_count = 0
 
-        command = config.log_command_for(instance.id)
-        async with conn.create_process(command) as process:
-            while True:
-                try:
-                    line = await asyncio.wait_for(
-                        process.stdout.readline(),
-                        timeout=config.stall_threshold_for(instance.id) * 60 + 30,
-                    )
-                except asyncio.TimeoutError:
-                    on_status("stalled — no output, reconnecting")
-                    raise
-                if not line:
-                    break
-                line = line.rstrip("\n\r")
+        splitter = LineSplitter()
+        last_progress_emit = 0.0
+
+        def handle(segments: list[tuple[str, bool]]) -> None:
+            nonlocal line_count, last_progress_emit
+            for line, is_progress in segments:
                 update_line_time()
+                if is_progress:
+                    now = time.monotonic()
+                    if not line.strip() or now - last_progress_emit < PROGRESS_EMIT_SECONDS:
+                        continue
+                    last_progress_emit = now
 
                 metrics = _write_to_storage(storage, parser, instance.id, line)
                 on_line(line, metrics)
@@ -94,6 +135,24 @@ async def _stream_one_session(
                 line_count += 1
                 if line_count % 100 == 0:
                     storage.flush(instance.id)
+
+        command = config.log_command_for(instance.id)
+        async with conn.create_process(command) as process:
+            while True:
+                try:
+                    chunk = await asyncio.wait_for(
+                        process.stdout.read(65536),
+                        timeout=config.stall_threshold_for(instance.id) * 60 + 30,
+                    )
+                except asyncio.TimeoutError:
+                    on_status("stalled — no output, reconnecting")
+                    raise
+                if not chunk:
+                    break
+                if isinstance(chunk, bytes):
+                    chunk = chunk.decode("utf-8", errors="replace")
+                handle(splitter.feed(chunk))
+            handle(splitter.flush())
 
             storage.flush(instance.id)
             stderr_text = await _read_stderr(process)

@@ -10,6 +10,14 @@ from ..discovery import DiscoveryResult, InstanceInfo, RateLimitError
 VAST_API_BASE = "https://console.vast.ai/api/v0"
 
 
+def _start_time(value: object) -> float | None:
+    try:
+        ts = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return ts if ts > 0 else None
+
+
 class VastProvider:
     name: str = "vast"
     display_name: str = "Vast.ai"
@@ -42,6 +50,7 @@ class VastProvider:
                     machine_id=int(inst.get("machine_id", 0)),
                     label=inst.get("label"),
                     dph_total=float(inst.get("dph_total", 0.0)),
+                    start_time=_start_time(inst.get("start_date")),
                 )
                 terminal = info.status in {"exited", "destroyed", "deleting", "error"}
                 if is_running and has_ssh:

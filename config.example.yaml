@@ -62,11 +62,33 @@ desktop_notifications: true
 # Payload: {timestamp, instance_id, alert_type, message, metrics?}
 alert_webhook_url: null
 
-# Webhook payload format: "raw" (default), "slack", or "discord"
+# Webhook payload format: "raw" (default), "slack", "discord", or "ntfy"
 # - raw: {timestamp, instance_id, alert_type, message, metrics?, gpu_name?, ...}
 # - slack: Slack Block Kit message with rich formatting
 # - discord: Discord embed with color-coded severity
+# - ntfy: plain-text push to an ntfy.sh topic URL (phone notifications, no account)
 alert_webhook_format: "raw"
+
+# ── Watchdog (`vigil watch`) ─────────────────────────────────────────
+# Headless mode that alerts when output stops, using GPU utilization to
+# tell hung, exited and busy runs apart. Uses stall_threshold_minutes above.
+
+# Seconds between nvidia-smi samples on each instance
+watch_gpu_poll_seconds: 60
+
+# Max GPU utilization (%) that still counts as idle
+watch_gpu_idle_percent: 5
+
+# Minutes of silence before alerting even though the GPU is busy
+# (long evals vs. NCCL deadlocks, which spin at 100% util)
+watch_busy_silence_minutes: 30
+
+# Repeat unresolved alerts with updated cost every N minutes (0 = alert once)
+watch_reminder_minutes: 60
+
+# Skip instances whose label contains any of these (case-insensitive).
+# To skip a single instance instead, set `watch: false` under instances.<id>.
+watch_skip_labels: []
 
 # ── Display ───────────────────────────────────────────────────────────
 
@@ -167,3 +189,4 @@ reconnect_backoff_max: 60
 #     ssh_username: "trainer"
 #   67890:
 #     log_command: "docker logs -f training_container"
+#     watch: false      # `vigil watch` ignores this instance

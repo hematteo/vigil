@@ -92,7 +92,7 @@ class TestFormatSlack:
     def test_basic_structure(self):
         result = _format_slack(99, "error", "Something broke")
 
-        assert result["text"] == "Vast.ai Alert: #99"
+        assert result["text"] == "vigil alert: #99"
         assert len(result["blocks"]) == 1
         block = result["blocks"][0]
         assert block["type"] == "section"
@@ -151,7 +151,7 @@ class TestFormatDiscord:
 
         assert len(result["embeds"]) == 1
         embed = result["embeds"][0]
-        assert embed["title"] == "Vast.ai Alert: #42"
+        assert embed["title"] == "vigil alert: #42"
         assert embed["description"] == "GPU crash"
         assert embed["footer"] == {"text": "error"}
 
