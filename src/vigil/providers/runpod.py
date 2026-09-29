@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import httpx
@@ -19,6 +20,7 @@ query {
       gpuCount
       machineId
       runtime {
+        uptimeInSeconds
         ports {
           ip
           isIpPublic
@@ -113,6 +115,11 @@ class RunPodProvider:
                         break
 
                 has_ssh = bool(ssh_host) and ssh_port > 0
+
+                start_time = None
+                uptime = (pod.get("runtime") or {}).get("uptimeInSeconds")
+                if isinstance(uptime, (int, float)) and uptime > 0:
+                    start_time = time.time() - uptime
                 machine = pod.get("machine") or {}
 
                 try:
@@ -130,6 +137,7 @@ class RunPodProvider:
                     machine_id=machine_id,
                     label=pod.get("name"),
                     dph_total=float(pod.get("costPerHr", 0.0)),
+                    start_time=start_time,
                 )
 
                 if desired == "RUNNING" and has_ssh:

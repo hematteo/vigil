@@ -19,6 +19,7 @@ class InstanceInfo:
     machine_id: int = 0
     label: str | None = None
     dph_total: float = 0.0
+    start_time: float | None = None  # Unix time the instance started, if the provider reports it
 
 
 @dataclass

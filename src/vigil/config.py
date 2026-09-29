@@ -94,6 +94,11 @@ class Config:
     reconnect_backoff_max: int = 60
     log_retention_days: int = 0       # 0 = keep forever
     log_max_size_mb: int = 0          # 0 = unlimited
+    # `vigil watch` (headless hang watchdog)
+    watch_gpu_poll_seconds: int = 60
+    watch_gpu_idle_percent: float = 5.0
+    watch_busy_silence_minutes: int = 30
+    watch_reminder_minutes: int = 60  # 0 = alert once per episode
     _config_path: Path | None = field(default=None, repr=False, compare=False)
 
     def log_command_for(self, instance_id: int | str) -> str:
@@ -180,6 +185,12 @@ class Config:
             data["log_retention_days"] = self.log_retention_days
         if self.log_max_size_mb != defaults.log_max_size_mb:
             data["log_max_size_mb"] = self.log_max_size_mb
+        for key in (
+            "watch_gpu_poll_seconds", "watch_gpu_idle_percent",
+            "watch_busy_silence_minutes", "watch_reminder_minutes",
+        ):
+            if getattr(self, key) != getattr(defaults, key):
+                data[key] = getattr(self, key)
 
         nc_defaults = NotificationConfig()
         nc_data = {}
@@ -252,8 +263,9 @@ def _apply_yaml_fields(config: Config, data: dict) -> None:
         "max_grid_columns", "log_buffer_lines", "log_display_lines",
         "ssh_login_timeout", "ssh_keepalive_interval", "reconnect_backoff_max",
         "log_retention_days", "log_max_size_mb",
+        "watch_gpu_poll_seconds", "watch_busy_silence_minutes", "watch_reminder_minutes",
     ), int)
-    _set_if_present(config, data, ("plateau_threshold",), float)
+    _set_if_present(config, data, ("plateau_threshold", "watch_gpu_idle_percent"), float)
 
     # Path fields need expanduser()
     for key in ("log_dir", "ssh_key_path"):

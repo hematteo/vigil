@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `vigil watch`: headless hang watchdog for always-on machines. Combines log silence with `nvidia-smi` sampling to alert on hung, exited, silently-busy (possible NCCL deadlock), unreachable and preempted instances, with the cost of the silence in every alert, reminders, and recovery notices
+- `ntfy` webhook format for phone push notifications
+- Instance start time from the Vast.ai and RunPod APIs, used for total cost in alerts
+
 - Provider abstraction layer — vigil now supports multiple GPU cloud providers
 - RunPod provider with full support (auto-discovery, cost tracking, instance management)
 - `--provider` flag now accepts `runpod` in addition to `vast`
@@ -29,6 +33,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Framework auto-detection by scanning running instance logs
 - Contextual onboarding hints (non-intrusive, dismissable, persistent)
 - `--reset-hints` CLI flag to re-show onboarding hints
+
+### Changed
+
+- Webhook alert titles say "vigil alert" instead of "Vast.ai Alert" (they were wrong for RunPod)
+- `--provider` now defaults to the `provider` set in the config file instead of always `vast`
 
 ### Fixed
 

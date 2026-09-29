@@ -9,7 +9,7 @@ from .discovery import InstanceInfo
 
 
 def _format_raw(
-    instance_id: int,
+    instance_id: int | str,
     alert_type: str,
     message: str,
     metrics: dict[str, str] | None = None,
@@ -31,13 +31,13 @@ def _format_raw(
 
 
 def _format_slack(
-    instance_id: int,
+    instance_id: int | str,
     alert_type: str,
     message: str,
     metrics: dict[str, str] | None = None,
     instance: InstanceInfo | None = None,
 ) -> dict[str, Any]:
-    title = f"Vast.ai Alert: #{instance_id}"
+    title = f"vigil alert: #{instance_id}"
     details = message
     if instance:
         details += f"\nGPU: {instance.gpu_name} x{instance.num_gpus} | ${instance.dph_total:.3f}/hr"
@@ -60,16 +60,20 @@ def _format_slack(
 
 
 def _format_discord(
-    instance_id: int,
+    instance_id: int | str,
     alert_type: str,
     message: str,
     metrics: dict[str, str] | None = None,
     instance: InstanceInfo | None = None,
 ) -> dict[str, Any]:
-    # Red for errors, orange for warnings
-    # Orange for known warning types, red for everything else (errors + unknown)
-    _WARN_TYPES = {"low_gpu", "slow"}
-    color = 16744448 if alert_type in _WARN_TYPES else 16711680
+    # Green for recoveries, orange for known warning types, red for everything else (errors + unknown)
+    _WARN_TYPES = {"low_gpu", "slow", "busy_silent", "unreachable"}
+    if alert_type == "recovered":
+        color = 3066993
+    elif alert_type in _WARN_TYPES:
+        color = 16744448
+    else:
+        color = 16711680
     fields = []
     if instance:
         fields.append({"name": "GPU", "value": f"{instance.gpu_name} x{instance.num_gpus}", "inline": True})
@@ -81,7 +85,7 @@ def _format_discord(
     return {
         "embeds": [
             {
-                "title": f"Vast.ai Alert: #{instance_id}",
+                "title": f"vigil alert: #{instance_id}",
                 "description": message,
                 "color": color,
                 "fields": fields,
@@ -89,6 +93,25 @@ def _format_discord(
             }
         ]
     }
+
+
+def _ntfy_request(
+    instance_id: int | str,
+    alert_type: str,
+    message: str,
+    instance: InstanceInfo | None = None,
+) -> tuple[str, dict[str, str]]:
+    """Build an ntfy.sh publish: plain-text body plus Title/Tags/Priority headers."""
+    title = f"vigil #{instance_id}: {alert_type}"
+    if instance and instance.label:
+        title += f" ({instance.label})"
+    # HTTP headers must be latin-1; drop anything else rather than fail the send
+    title = title.encode("ascii", errors="ignore").decode()
+    if alert_type == "recovered":
+        tags, priority = "white_check_mark", "default"
+    else:
+        tags, priority = "warning", "high"
+    return message, {"Title": title, "Tags": tags, "Priority": priority}
 
 
 _FORMATTERS = {
@@ -100,7 +123,7 @@ _FORMATTERS = {
 
 async def post_webhook_alert(
     url: str,
-    instance_id: int,
+    instance_id: int | str,
     alert_type: str,
     message: str,
     metrics: dict[str, str] | None = None,
@@ -109,14 +132,18 @@ async def post_webhook_alert(
     client: httpx.AsyncClient | None = None,
 ) -> None:
     """POST an alert payload to a webhook URL. Best-effort, never raises."""
-    formatter = _FORMATTERS.get(format, _format_raw)
-    payload = formatter(instance_id, alert_type, message, metrics, instance)
+    if format == "ntfy":
+        body, headers = _ntfy_request(instance_id, alert_type, message, instance)
+        kwargs: dict[str, Any] = {"content": body.encode(), "headers": headers}
+    else:
+        formatter = _FORMATTERS.get(format, _format_raw)
+        kwargs = {"json": formatter(instance_id, alert_type, message, metrics, instance)}
 
     try:
         if client is None:
             async with httpx.AsyncClient() as c:
-                await c.post(url, json=payload, timeout=10.0)
+                await c.post(url, timeout=10.0, **kwargs)
         else:
-            await client.post(url, json=payload, timeout=10.0)
+            await client.post(url, timeout=10.0, **kwargs)
     except Exception:
         pass  # Best effort — never disrupt the app
